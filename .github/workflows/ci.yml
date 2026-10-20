@@ -19,7 +19,7 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - run: python -m training.train
-      - run: pytest -q
+      - run: python -m pytest -q
 
   docker-build:
     runs-on: ubuntu-latest
