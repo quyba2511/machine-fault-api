@@ -13,7 +13,7 @@ from sklearn.preprocessing import StandardScaler
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_PATH = BASE_DIR / "data" / "machine_data.csv"
 MODEL_PATH = BASE_DIR / "models" / "fault_model.joblib"
-MODEL_VERSION = "v1.1"
+MODEL_VERSION = "v1.2"
 
 FEATURES = [
     "temperature",
@@ -44,9 +44,9 @@ def metrics_at_threshold(y_true: pd.Series, probabilities, threshold: float) -> 
     }
 
 
-def print_evaluation(y_true: pd.Series, probabilities, threshold: float) -> None:
-    metrics = metrics_at_threshold(y_true, probabilities, threshold)
-    print(f"\nThreshold: {threshold:.2f}")
+def print_metrics(title: str, metrics: dict) -> None:
+    print(f"\n--- {title} ---")
+    print(f'Threshold: {metrics["threshold"]:.2f}')
     print("Confusion matrix:")
     print([[metrics["tn"], metrics["fp"]], [metrics["fn"], metrics["tp"]]])
     print(
@@ -83,12 +83,25 @@ def train() -> None:
     X = df[FEATURES]
     y = df[TARGET]
 
-    X_train, X_test, y_train, y_test = train_test_split(
+    # First hold out the final test set. It must not participate in training or
+    # threshold selection.
+    X_train_val, X_test, y_train_val, y_test = train_test_split(
         X,
         y,
-        test_size=0.25,
+        test_size=0.15,
         random_state=42,
         stratify=y,
+    )
+
+    # Split the remaining 85% so the final proportions are approximately
+    # 70% train, 15% validation, 15% test.
+    validation_fraction = 0.15 / 0.85
+    X_train, X_val, y_train, y_val = train_test_split(
+        X_train_val,
+        y_train_val,
+        test_size=validation_fraction,
+        random_state=42,
+        stratify=y_train_val,
     )
 
     pipeline = Pipeline(
@@ -106,28 +119,33 @@ def train() -> None:
     )
     pipeline.fit(X_train, y_train)
 
-    probabilities = pipeline.predict_proba(X_test)[:, 1]
+    validation_probabilities = pipeline.predict_proba(X_val)[:, 1]
 
     print(f"Training samples: {len(X_train)}")
+    print(f"Validation samples: {len(X_val)}")
     print(f"Test samples: {len(X_test)}")
     print(f"Training fault rate: {y_train.mean():.2%}")
+    print(f"Validation fault rate: {y_val.mean():.2%}")
     print(f"Test fault rate: {y_test.mean():.2%}")
 
-    print("\n--- Reference thresholds ---")
+    print("\n--- Validation reference thresholds ---")
     for threshold in THRESHOLDS:
-        print_evaluation(y_test, probabilities, threshold)
+        metrics = metrics_at_threshold(y_val, validation_probabilities, threshold)
+        print(
+            f'{threshold:.2f}: precision={metrics["precision"]:.4f} '
+            f'recall={metrics["recall"]:.4f} f1={metrics["f1"]:.4f} '
+            f'FP={metrics["fp"]} FN={metrics["fn"]}'
+        )
 
-    chosen = choose_threshold(y_test, probabilities, MIN_RECALL)
-    print("\n--- Automatic threshold selection ---")
-    print(f"Business requirement: recall >= {MIN_RECALL:.0%}")
-    print(f'Chosen threshold: {chosen["threshold"]:.2f}')
-    print(f'Precision: {chosen["precision"]:.4f}')
-    print(f'Recall: {chosen["recall"]:.4f}')
-    print(f'F1: {chosen["f1"]:.4f}')
-    print(
-        f'TN={chosen["tn"]} FP={chosen["fp"]} '
-        f'FN={chosen["fn"]} TP={chosen["tp"]}'
-    )
+    chosen = choose_threshold(y_val, validation_probabilities, MIN_RECALL)
+    print_metrics("Threshold selected on VALIDATION set", chosen)
+    print(f"Business requirement: validation recall >= {MIN_RECALL:.0%}")
+
+    # The threshold is now frozen. The test set is used exactly once for the
+    # final unbiased evaluation; it cannot change the selected threshold.
+    test_probabilities = pipeline.predict_proba(X_test)[:, 1]
+    final_test = metrics_at_threshold(y_test, test_probabilities, chosen["threshold"])
+    print_metrics("Final evaluation on untouched TEST set", final_test)
 
     artifact = {
         "model": pipeline,
@@ -136,9 +154,11 @@ def train() -> None:
         "features": FEATURES,
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "training_samples": len(X_train),
+        "validation_samples": len(X_val),
         "test_samples": len(X_test),
         "min_recall_requirement": MIN_RECALL,
-        "evaluation": chosen,
+        "validation_evaluation": chosen,
+        "test_evaluation": final_test,
     }
 
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
