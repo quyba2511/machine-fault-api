@@ -1,6 +1,6 @@
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.config import get_settings
@@ -12,10 +12,11 @@ from app.ml import get_runtime_info, load_model, predict_fault, runtime
 from app.monitoring import get_feature_stats, get_model_performance
 from app.repository import save_prediction, set_actual_fault
 from app.schemas import ActualFaultUpdate, PredictionRequest, PredictionResponse
+from app.security import require_admin_api_key
 
 configure_logging()
 
-app = FastAPI(title="Machine Fault Prediction API", version="6.0.0", description="Production ML service with runtime model lifecycle.")
+app = FastAPI(title="Machine Fault Prediction API", version="7.0.0", description="Production ML service with protected operations and CI/CD.")
 app.middleware("http")(request_logging_middleware)
 
 
@@ -52,7 +53,7 @@ def runtime_model() -> dict:
     return get_runtime_info()
 
 
-@app.post("/models/reload-production")
+@app.post("/models/reload-production", dependencies=[Depends(require_admin_api_key)])
 def reload_model() -> dict:
     try:
         return reload_production_model()
@@ -79,7 +80,7 @@ def predict(data: PredictionRequest, request: Request) -> dict:
         raise HTTPException(status_code=503, detail="Prediction succeeded but persistence failed; transaction rolled back.") from exc
 
 
-@app.patch("/predictions/{prediction_id}/actual-fault")
+@app.patch("/predictions/{prediction_id}/actual-fault", dependencies=[Depends(require_admin_api_key)])
 def update_actual_fault(prediction_id: int, payload: ActualFaultUpdate) -> dict:
     try:
         updated = set_actual_fault(prediction_id, payload.actual_fault)
@@ -90,7 +91,7 @@ def update_actual_fault(prediction_id: int, payload: ActualFaultUpdate) -> dict:
     return {"prediction_id": prediction_id, "actual_fault": payload.actual_fault, "status": "updated"}
 
 
-@app.get("/monitoring/performance")
+@app.get("/monitoring/performance", dependencies=[Depends(require_admin_api_key)])
 def monitoring_performance(days: int = Query(default=30, ge=1, le=365), model_version: str | None = None) -> dict:
     try:
         return get_model_performance(days, model_version)
@@ -98,7 +99,7 @@ def monitoring_performance(days: int = Query(default=30, ge=1, le=365), model_ve
         raise HTTPException(status_code=503, detail="Monitoring database unavailable") from exc
 
 
-@app.get("/monitoring/features")
+@app.get("/monitoring/features", dependencies=[Depends(require_admin_api_key)])
 def monitoring_features(days: int = Query(default=7, ge=1, le=365), model_version: str | None = None) -> dict:
     try:
         return get_feature_stats(days, model_version)
