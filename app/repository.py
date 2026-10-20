@@ -7,23 +7,23 @@ from app.schemas import PredictionRequest
 
 
 INSERT_PREDICTION = text("""
-INSERT INTO dbo.ml_prediction_history (
+INSERT INTO ml_prediction_history (
     request_id, machine_id, temperature, pressure, vibration,
     run_hours, alarm_count, maintenance_days,
     fault_probability, prediction, risk_level, threshold, model_version
 )
-OUTPUT INSERTED.id
 VALUES (
     :request_id, :machine_id, :temperature, :pressure, :vibration,
     :run_hours, :alarm_count, :maintenance_days,
     :fault_probability, :prediction, :risk_level, :threshold, :model_version
 )
+RETURNING id
 """)
 
 UPDATE_ACTUAL_FAULT = text("""
-UPDATE dbo.ml_prediction_history
+UPDATE ml_prediction_history
 SET actual_fault = :actual_fault,
-    actual_fault_updated_at = SYSUTCDATETIME()
+    actual_fault_updated_at = CURRENT_TIMESTAMP
 WHERE id = :prediction_id
 """)
 
@@ -44,7 +44,7 @@ def save_prediction(
         "alarm_count": request.alarm_count,
         "maintenance_days": request.maintenance_days,
         "fault_probability": result["fault_probability"],
-        "prediction": result["prediction"],
+        "prediction": bool(result["prediction"]),
         "risk_level": result["risk_level"],
         "threshold": threshold,
         "model_version": result["model_version"],
@@ -61,6 +61,6 @@ def set_actual_fault(prediction_id: int, actual_fault: int) -> bool:
     with get_engine().begin() as connection:
         result = connection.execute(
             UPDATE_ACTUAL_FAULT,
-            {"prediction_id": prediction_id, "actual_fault": actual_fault},
+            {"prediction_id": prediction_id, "actual_fault": bool(actual_fault)},
         )
     return result.rowcount == 1
