@@ -11,6 +11,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_MODEL_PATH = BASE_DIR / "models" / "fault_model.joblib"
 DEFAULT_MODEL_VERSION = "v1.0"
 DEFAULT_THRESHOLD = 0.5
+HIGH_RISK_THRESHOLD = 0.8
 
 FEATURES = [
     "temperature",
@@ -97,15 +98,21 @@ def get_runtime_info() -> dict:
     }
 
 
-def get_risk_level(probability: float) -> str:
-    if probability >= 0.8:
+def get_risk_level(probability: float, fault_threshold: float) -> str:
+    """Map probability to a business risk level consistent with prediction.
+
+    LOW means the sample is below the model's fault decision threshold.
+    Once the model predicts a fault, the risk is at least MEDIUM.
+    """
+    if probability >= HIGH_RISK_THRESHOLD:
         return "HIGH"
-    if probability >= 0.5:
+    if probability >= fault_threshold:
         return "MEDIUM"
     return "LOW"
 
 
 def predict_fault(data: PredictionRequest) -> dict:
+    # Keep model, threshold and version from the same immutable runtime snapshot.
     loaded = runtime.current()
     frame = pd.DataFrame([{
         "temperature": data.temperature,
@@ -120,6 +127,6 @@ def predict_fault(data: PredictionRequest) -> dict:
         "machine_id": data.machine_id,
         "fault_probability": round(probability, 4),
         "prediction": int(probability >= loaded.threshold),
-        "risk_level": get_risk_level(probability),
+        "risk_level": get_risk_level(probability, loaded.threshold),
         "model_version": loaded.version,
     }
