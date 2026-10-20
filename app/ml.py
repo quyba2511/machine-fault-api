@@ -47,7 +47,6 @@ class ModelRuntime:
 
     def reload(self, artifact_path: str, version: str, threshold: float) -> LoadedModel:
         candidate = self._load_artifact(Path(artifact_path), version, threshold)
-        # Load and validate first. Only then swap the shared reference.
         with self._lock:
             self._loaded = candidate
             return self._loaded
@@ -56,10 +55,30 @@ class ModelRuntime:
     def _load_artifact(path: Path, version: str, threshold: float) -> LoadedModel:
         if not path.exists():
             raise RuntimeError(f"Model artifact not found: {path}")
-        model = joblib.load(path)
+
+        artifact = joblib.load(path)
+
+        # New artifacts bundle the trained pipeline with the threshold and
+        # version selected during evaluation. Old pipeline-only artifacts are
+        # still supported as a fallback.
+        if isinstance(artifact, dict) and "model" in artifact:
+            model = artifact["model"]
+            artifact_version = str(artifact.get("model_version", version))
+            artifact_threshold = float(artifact.get("threshold", threshold))
+        else:
+            model = artifact
+            artifact_version = version
+            artifact_threshold = float(threshold)
+
         if not hasattr(model, "predict_proba"):
             raise RuntimeError("Model artifact does not support predict_proba")
-        return LoadedModel(model=model, version=version, threshold=float(threshold), artifact_path=str(path))
+
+        return LoadedModel(
+            model=model,
+            version=artifact_version,
+            threshold=artifact_threshold,
+            artifact_path=str(path),
+        )
 
 
 runtime = ModelRuntime()
