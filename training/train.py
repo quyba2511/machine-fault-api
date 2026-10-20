@@ -13,7 +13,7 @@ from sklearn.preprocessing import StandardScaler
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_PATH = BASE_DIR / "data" / "machine_data.csv"
 MODEL_PATH = BASE_DIR / "models" / "fault_model.joblib"
-MODEL_VERSION = "v1.2"
+MODEL_VERSION = "v1.3"
 
 FEATURES = [
     "temperature",
@@ -26,12 +26,15 @@ FEATURES = [
 TARGET = "fault"
 THRESHOLDS = (0.30, 0.40, 0.50, 0.60, 0.70)
 MIN_RECALL = 0.75
+FALSE_NEGATIVE_COST = 10_000
+FALSE_POSITIVE_COST = 100
 
 
 def metrics_at_threshold(y_true: pd.Series, probabilities, threshold: float) -> dict:
     y_pred = (probabilities >= threshold).astype(int)
     cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
     tn, fp, fn, tp = cm.ravel()
+    business_cost = (fn * FALSE_NEGATIVE_COST) + (fp * FALSE_POSITIVE_COST)
     return {
         "threshold": float(threshold),
         "tn": int(tn),
@@ -41,6 +44,7 @@ def metrics_at_threshold(y_true: pd.Series, probabilities, threshold: float) -> 
         "precision": float(precision_score(y_true, y_pred, zero_division=0)),
         "recall": float(recall_score(y_true, y_pred, zero_division=0)),
         "f1": float(f1_score(y_true, y_pred, zero_division=0)),
+        "business_cost": int(business_cost),
     }
 
 
@@ -56,9 +60,10 @@ def print_metrics(title: str, metrics: dict) -> None:
     print(f'Precision: {metrics["precision"]:.4f}')
     print(f'Recall: {metrics["recall"]:.4f}')
     print(f'F1: {metrics["f1"]:.4f}')
+    print(f'Business cost: ${metrics["business_cost"]:,}')
 
 
-def choose_threshold(y_true: pd.Series, probabilities, min_recall: float) -> dict:
+def threshold_candidates(y_true: pd.Series, probabilities, min_recall: float) -> list[dict]:
     candidates = []
     for threshold in np.arange(0.01, 1.00, 0.01):
         metrics = metrics_at_threshold(y_true, probabilities, threshold)
@@ -67,10 +72,27 @@ def choose_threshold(y_true: pd.Series, probabilities, min_recall: float) -> dic
 
     if not candidates:
         raise ValueError(f"No threshold satisfies minimum recall {min_recall:.2%}")
+    return candidates
 
+
+def choose_threshold_by_precision(y_true: pd.Series, probabilities, min_recall: float) -> dict:
+    candidates = threshold_candidates(y_true, probabilities, min_recall)
     return max(
         candidates,
         key=lambda item: (item["precision"], item["f1"], item["threshold"]),
+    )
+
+
+def choose_threshold_by_cost(y_true: pd.Series, probabilities, min_recall: float) -> dict:
+    candidates = threshold_candidates(y_true, probabilities, min_recall)
+    return min(
+        candidates,
+        key=lambda item: (
+            item["business_cost"],
+            -item["recall"],
+            -item["precision"],
+            -item["threshold"],
+        ),
     )
 
 
@@ -83,8 +105,6 @@ def train() -> None:
     X = df[FEATURES]
     y = df[TARGET]
 
-    # First hold out the final test set. It must not participate in training or
-    # threshold selection.
     X_train_val, X_test, y_train_val, y_test = train_test_split(
         X,
         y,
@@ -93,8 +113,6 @@ def train() -> None:
         stratify=y,
     )
 
-    # Split the remaining 85% so the final proportions are approximately
-    # 70% train, 15% validation, 15% test.
     validation_fraction = 0.15 / 0.85
     X_train, X_val, y_train, y_val = train_test_split(
         X_train_val,
@@ -127,6 +145,10 @@ def train() -> None:
     print(f"Training fault rate: {y_train.mean():.2%}")
     print(f"Validation fault rate: {y_val.mean():.2%}")
     print(f"Test fault rate: {y_test.mean():.2%}")
+    print(
+        f"Business costs: FN=${FALSE_NEGATIVE_COST:,}, "
+        f"FP=${FALSE_POSITIVE_COST:,}"
+    )
 
     print("\n--- Validation reference thresholds ---")
     for threshold in THRESHOLDS:
@@ -134,15 +156,24 @@ def train() -> None:
         print(
             f'{threshold:.2f}: precision={metrics["precision"]:.4f} '
             f'recall={metrics["recall"]:.4f} f1={metrics["f1"]:.4f} '
-            f'FP={metrics["fp"]} FN={metrics["fn"]}'
+            f'FP={metrics["fp"]} FN={metrics["fn"]} '
+            f'cost=${metrics["business_cost"]:,}'
         )
 
-    chosen = choose_threshold(y_val, validation_probabilities, MIN_RECALL)
-    print_metrics("Threshold selected on VALIDATION set", chosen)
+    precision_choice = choose_threshold_by_precision(
+        y_val, validation_probabilities, MIN_RECALL
+    )
+    cost_choice = choose_threshold_by_cost(
+        y_val, validation_probabilities, MIN_RECALL
+    )
+
+    print_metrics("Precision-optimized threshold on VALIDATION", precision_choice)
+    print_metrics("Business-cost-optimized threshold on VALIDATION", cost_choice)
     print(f"Business requirement: validation recall >= {MIN_RECALL:.0%}")
 
-    # The threshold is now frozen. The test set is used exactly once for the
-    # final unbiased evaluation; it cannot change the selected threshold.
+    # The product uses the cost-optimized threshold. Freeze it before touching
+    # the test set so test data cannot influence the business decision rule.
+    chosen = cost_choice
     test_probabilities = pipeline.predict_proba(X_test)[:, 1]
     final_test = metrics_at_threshold(y_test, test_probabilities, chosen["threshold"])
     print_metrics("Final evaluation on untouched TEST set", final_test)
@@ -157,6 +188,10 @@ def train() -> None:
         "validation_samples": len(X_val),
         "test_samples": len(X_test),
         "min_recall_requirement": MIN_RECALL,
+        "false_negative_cost": FALSE_NEGATIVE_COST,
+        "false_positive_cost": FALSE_POSITIVE_COST,
+        "threshold_selection_method": "minimum_business_cost_with_recall_constraint",
+        "precision_optimized_validation_evaluation": precision_choice,
         "validation_evaluation": chosen,
         "test_evaluation": final_test,
     }
@@ -167,6 +202,7 @@ def train() -> None:
     print(f"Model artifact saved to {MODEL_PATH}")
     print(f"Artifact model version: {MODEL_VERSION}")
     print(f'Artifact threshold: {chosen["threshold"]:.2f}')
+    print("Threshold selection: minimum business cost with recall constraint")
 
 
 if __name__ == "__main__":
