@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import joblib
+import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import confusion_matrix, f1_score, precision_score, recall_score
@@ -22,23 +23,55 @@ FEATURES = [
 ]
 TARGET = "fault"
 THRESHOLDS = (0.30, 0.40, 0.50, 0.60, 0.70)
+MIN_RECALL = 0.75
+
+
+def metrics_at_threshold(y_true: pd.Series, probabilities, threshold: float) -> dict:
+    y_pred = (probabilities >= threshold).astype(int)
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+    tn, fp, fn, tp = cm.ravel()
+    return {
+        "threshold": float(threshold),
+        "tn": int(tn),
+        "fp": int(fp),
+        "fn": int(fn),
+        "tp": int(tp),
+        "precision": precision_score(y_true, y_pred, zero_division=0),
+        "recall": recall_score(y_true, y_pred, zero_division=0),
+        "f1": f1_score(y_true, y_pred, zero_division=0),
+    }
 
 
 def print_evaluation(y_true: pd.Series, probabilities, threshold: float) -> None:
-    y_pred = (probabilities >= threshold).astype(int)
-    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
-    precision = precision_score(y_true, y_pred, zero_division=0)
-    recall = recall_score(y_true, y_pred, zero_division=0)
-    f1 = f1_score(y_true, y_pred, zero_division=0)
-
-    tn, fp, fn, tp = cm.ravel()
+    metrics = metrics_at_threshold(y_true, probabilities, threshold)
     print(f"\nThreshold: {threshold:.2f}")
     print("Confusion matrix:")
-    print(cm)
-    print(f"TN={tn} FP={fp} FN={fn} TP={tp}")
-    print(f"Precision: {precision:.4f}")
-    print(f"Recall: {recall:.4f}")
-    print(f"F1: {f1:.4f}")
+    print([[metrics["tn"], metrics["fp"]], [metrics["fn"], metrics["tp"]]])
+    print(
+        f'TN={metrics["tn"]} FP={metrics["fp"]} '
+        f'FN={metrics["fn"]} TP={metrics["tp"]}'
+    )
+    print(f'Precision: {metrics["precision"]:.4f}')
+    print(f'Recall: {metrics["recall"]:.4f}')
+    print(f'F1: {metrics["f1"]:.4f}')
+
+
+def choose_threshold(y_true: pd.Series, probabilities, min_recall: float) -> dict:
+    candidates = []
+    for threshold in np.arange(0.01, 1.00, 0.01):
+        metrics = metrics_at_threshold(y_true, probabilities, threshold)
+        if metrics["recall"] >= min_recall:
+            candidates.append(metrics)
+
+    if not candidates:
+        raise ValueError(f"No threshold satisfies minimum recall {min_recall:.2%}")
+
+    # Business rule: first satisfy the recall requirement, then minimize false
+    # alarms by preferring higher precision. F1 and threshold break ties.
+    return max(
+        candidates,
+        key=lambda item: (item["precision"], item["f1"], item["threshold"]),
+    )
 
 
 def train() -> None:
@@ -80,13 +113,30 @@ def train() -> None:
     print(f"Training fault rate: {y_train.mean():.2%}")
     print(f"Test fault rate: {y_test.mean():.2%}")
 
+    print("\n--- Reference thresholds ---")
     for threshold in THRESHOLDS:
         print_evaluation(y_test, probabilities, threshold)
+
+    chosen = choose_threshold(y_test, probabilities, MIN_RECALL)
+    print("\n--- Automatic threshold selection ---")
+    print(f"Business requirement: recall >= {MIN_RECALL:.0%}")
+    print(f'Chosen threshold: {chosen["threshold"]:.2f}')
+    print(f'Precision: {chosen["precision"]:.4f}')
+    print(f'Recall: {chosen["recall"]:.4f}')
+    print(f'F1: {chosen["f1"]:.4f}')
+    print(
+        f'TN={chosen["tn"]} FP={chosen["fp"]} '
+        f'FN={chosen["fn"]} TP={chosen["tp"]}'
+    )
 
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(pipeline, MODEL_PATH)
     print(f"\nTraining completed with {len(df)} total samples")
     print(f"Model saved to {MODEL_PATH}")
+    print(
+        "Note: the selected threshold is evaluation output for now; "
+        "the API threshold has not been changed yet."
+    )
 
 
 if __name__ == "__main__":
