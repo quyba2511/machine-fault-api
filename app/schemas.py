@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from pydantic import BaseModel, Field
 
 
@@ -12,8 +14,14 @@ class PredictionRequest(BaseModel):
 
 
 class PredictionResponse(BaseModel):
+    request_id: UUID
+    prediction_id: int | None = None
     machine_id: str
     fault_probability: float
     prediction: int
     risk_level: str
     model_version: str
+
+
+class ActualFaultUpdate(BaseModel):
+    actual_fault: int = Field(ge=0, le=1)

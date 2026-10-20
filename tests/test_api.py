@@ -8,7 +8,9 @@ client = TestClient(app)
 def test_health():
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json()["status"] == "ok"
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["prediction_persistence"] is False
 
 
 def test_invalid_negative_run_hours():
@@ -42,6 +44,8 @@ def test_predict_after_training():
     )
     assert response.status_code == 200
     body = response.json()
+    assert body["request_id"]
+    assert body["prediction_id"] is None
     assert body["machine_id"] == "MC001"
     assert 0 <= body["fault_probability"] <= 1
     assert body["prediction"] in (0, 1)
