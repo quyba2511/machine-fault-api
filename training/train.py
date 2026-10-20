@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 
 import joblib
@@ -12,6 +13,7 @@ from sklearn.preprocessing import StandardScaler
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_PATH = BASE_DIR / "data" / "machine_data.csv"
 MODEL_PATH = BASE_DIR / "models" / "fault_model.joblib"
+MODEL_VERSION = "v1.1"
 
 FEATURES = [
     "temperature",
@@ -36,9 +38,9 @@ def metrics_at_threshold(y_true: pd.Series, probabilities, threshold: float) -> 
         "fp": int(fp),
         "fn": int(fn),
         "tp": int(tp),
-        "precision": precision_score(y_true, y_pred, zero_division=0),
-        "recall": recall_score(y_true, y_pred, zero_division=0),
-        "f1": f1_score(y_true, y_pred, zero_division=0),
+        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
+        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
+        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
     }
 
 
@@ -66,8 +68,6 @@ def choose_threshold(y_true: pd.Series, probabilities, min_recall: float) -> dic
     if not candidates:
         raise ValueError(f"No threshold satisfies minimum recall {min_recall:.2%}")
 
-    # Business rule: first satisfy the recall requirement, then minimize false
-    # alarms by preferring higher precision. F1 and threshold break ties.
     return max(
         candidates,
         key=lambda item: (item["precision"], item["f1"], item["threshold"]),
@@ -129,14 +129,24 @@ def train() -> None:
         f'FN={chosen["fn"]} TP={chosen["tp"]}'
     )
 
+    artifact = {
+        "model": pipeline,
+        "model_version": MODEL_VERSION,
+        "threshold": chosen["threshold"],
+        "features": FEATURES,
+        "trained_at": datetime.now(timezone.utc).isoformat(),
+        "training_samples": len(X_train),
+        "test_samples": len(X_test),
+        "min_recall_requirement": MIN_RECALL,
+        "evaluation": chosen,
+    }
+
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(pipeline, MODEL_PATH)
+    joblib.dump(artifact, MODEL_PATH)
     print(f"\nTraining completed with {len(df)} total samples")
-    print(f"Model saved to {MODEL_PATH}")
-    print(
-        "Note: the selected threshold is evaluation output for now; "
-        "the API threshold has not been changed yet."
-    )
+    print(f"Model artifact saved to {MODEL_PATH}")
+    print(f"Artifact model version: {MODEL_VERSION}")
+    print(f'Artifact threshold: {chosen["threshold"]:.2f}')
 
 
 if __name__ == "__main__":
