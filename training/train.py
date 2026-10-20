@@ -28,13 +28,20 @@ THRESHOLDS = (0.30, 0.40, 0.50, 0.60, 0.70)
 MIN_RECALL = 0.75
 FALSE_NEGATIVE_COST = 10_000
 FALSE_POSITIVE_COST = 100
+FP_COST_SCENARIOS = (100, 500, 1_000, 2_000, 5_000)
 
 
-def metrics_at_threshold(y_true: pd.Series, probabilities, threshold: float) -> dict:
+def metrics_at_threshold(
+    y_true: pd.Series,
+    probabilities,
+    threshold: float,
+    false_negative_cost: int = FALSE_NEGATIVE_COST,
+    false_positive_cost: int = FALSE_POSITIVE_COST,
+) -> dict:
     y_pred = (probabilities >= threshold).astype(int)
     cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
     tn, fp, fn, tp = cm.ravel()
-    business_cost = (fn * FALSE_NEGATIVE_COST) + (fp * FALSE_POSITIVE_COST)
+    business_cost = (fn * false_negative_cost) + (fp * false_positive_cost)
     return {
         "threshold": float(threshold),
         "tn": int(tn),
@@ -63,10 +70,22 @@ def print_metrics(title: str, metrics: dict) -> None:
     print(f'Business cost: ${metrics["business_cost"]:,}')
 
 
-def threshold_candidates(y_true: pd.Series, probabilities, min_recall: float) -> list[dict]:
+def threshold_candidates(
+    y_true: pd.Series,
+    probabilities,
+    min_recall: float,
+    false_negative_cost: int = FALSE_NEGATIVE_COST,
+    false_positive_cost: int = FALSE_POSITIVE_COST,
+) -> list[dict]:
     candidates = []
     for threshold in np.arange(0.01, 1.00, 0.01):
-        metrics = metrics_at_threshold(y_true, probabilities, threshold)
+        metrics = metrics_at_threshold(
+            y_true,
+            probabilities,
+            threshold,
+            false_negative_cost=false_negative_cost,
+            false_positive_cost=false_positive_cost,
+        )
         if metrics["recall"] >= min_recall:
             candidates.append(metrics)
 
@@ -83,8 +102,20 @@ def choose_threshold_by_precision(y_true: pd.Series, probabilities, min_recall: 
     )
 
 
-def choose_threshold_by_cost(y_true: pd.Series, probabilities, min_recall: float) -> dict:
-    candidates = threshold_candidates(y_true, probabilities, min_recall)
+def choose_threshold_by_cost(
+    y_true: pd.Series,
+    probabilities,
+    min_recall: float,
+    false_negative_cost: int = FALSE_NEGATIVE_COST,
+    false_positive_cost: int = FALSE_POSITIVE_COST,
+) -> dict:
+    candidates = threshold_candidates(
+        y_true,
+        probabilities,
+        min_recall,
+        false_negative_cost=false_negative_cost,
+        false_positive_cost=false_positive_cost,
+    )
     return min(
         candidates,
         key=lambda item: (
@@ -94,6 +125,26 @@ def choose_threshold_by_cost(y_true: pd.Series, probabilities, min_recall: float
             -item["threshold"],
         ),
     )
+
+
+def print_cost_sensitivity(y_true: pd.Series, probabilities) -> None:
+    print("\n--- Business cost sensitivity analysis on VALIDATION ---")
+    print(f"FN cost fixed at ${FALSE_NEGATIVE_COST:,}")
+    print("FP COST | BEST THRESHOLD | RECALL | PRECISION | FP | FN | TOTAL COST")
+    for fp_cost in FP_COST_SCENARIOS:
+        choice = choose_threshold_by_cost(
+            y_true,
+            probabilities,
+            MIN_RECALL,
+            false_negative_cost=FALSE_NEGATIVE_COST,
+            false_positive_cost=fp_cost,
+        )
+        print(
+            f'${fp_cost:>6,} | {choice["threshold"]:>14.2f} | '
+            f'{choice["recall"]:>6.2%} | {choice["precision"]:>9.2%} | '
+            f'{choice["fp"]:>2} | {choice["fn"]:>2} | '
+            f'${choice["business_cost"]:,}'
+        )
 
 
 def train() -> None:
@@ -171,8 +222,12 @@ def train() -> None:
     print_metrics("Business-cost-optimized threshold on VALIDATION", cost_choice)
     print(f"Business requirement: validation recall >= {MIN_RECALL:.0%}")
 
-    # The product uses the cost-optimized threshold. Freeze it before touching
-    # the test set so test data cannot influence the business decision rule.
+    # This is an analysis only: vary the assumed cost of a false alarm while
+    # keeping the trained model and validation predictions exactly the same.
+    print_cost_sensitivity(y_val, validation_probabilities)
+
+    # The production artifact still uses the agreed baseline business costs.
+    # Freeze that threshold before touching the test set.
     chosen = cost_choice
     test_probabilities = pipeline.predict_proba(X_test)[:, 1]
     final_test = metrics_at_threshold(y_test, test_probabilities, chosen["threshold"])
