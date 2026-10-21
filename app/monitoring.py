@@ -12,8 +12,8 @@ SELECT
     SUM(CASE WHEN prediction IS FALSE AND actual_fault IS FALSE THEN 1 ELSE 0 END) AS tn,
     SUM(CASE WHEN prediction IS TRUE AND actual_fault IS FALSE THEN 1 ELSE 0 END) AS fp,
     SUM(CASE WHEN prediction IS FALSE AND actual_fault IS TRUE THEN 1 ELSE 0 END) AS fn,
-    AVG(fault_probability::double precision) AS avg_probability,
-    AVG(actual_fault::int::double precision) AS actual_fault_rate
+    AVG(CAST(fault_probability AS DOUBLE PRECISION)) AS avg_probability,
+    AVG(CAST(CAST(actual_fault AS INTEGER) AS DOUBLE PRECISION)) AS actual_fault_rate
 FROM ml_prediction_history
 WHERE actual_fault IS NOT NULL
   AND created_at >= :since
@@ -27,9 +27,9 @@ SELECT
     AVG(pressure) AS pressure_mean,
     AVG(vibration) AS vibration_mean,
     AVG(run_hours) AS run_hours_mean,
-    AVG(alarm_count::double precision) AS alarm_count_mean,
-    AVG(maintenance_days::double precision) AS maintenance_days_mean,
-    AVG(fault_probability::double precision) AS probability_mean
+    AVG(CAST(alarm_count AS DOUBLE PRECISION)) AS alarm_count_mean,
+    AVG(CAST(maintenance_days AS DOUBLE PRECISION)) AS maintenance_days_mean,
+    AVG(CAST(fault_probability AS DOUBLE PRECISION)) AS probability_mean
 FROM ml_prediction_history
 WHERE created_at >= :since
   AND (:model_version IS NULL OR model_version = :model_version)
