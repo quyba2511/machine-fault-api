@@ -94,9 +94,10 @@ def main() -> None:
         else:
             counts["fn"] += 1
 
+    loaded = runtime.current()
     print(f"Inserted {ROW_COUNT} labeled demo production rows")
-    print(f"Runtime model: {runtime.current().model_version}")
-    print(f"Runtime threshold: {runtime.current().threshold:.2f}")
+    print(f"Runtime model: {loaded.version}")
+    print(f"Runtime threshold: {loaded.threshold:.2f}")
     print(f"Actual faults: {actual_faults}/{ROW_COUNT}")
     print(f"TP={counts['tp']} TN={counts['tn']} FP={counts['fp']} FN={counts['fn']}")
     print("These rows are synthetic demo feedback, not real production evidence.")
