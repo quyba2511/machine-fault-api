@@ -4,20 +4,11 @@ from app.database import get_engine
 
 
 GET_PRODUCTION = text("""
-SELECT TOP 1 model_version, artifact_path, threshold
-FROM dbo.ml_model_registry
+SELECT model_version, artifact_path, threshold
+FROM ml_model_registry
 WHERE status = 'PRODUCTION'
-ORDER BY promoted_at DESC
-""")
-
-PROMOTE = text("""
-UPDATE dbo.ml_model_registry
-SET status = 'RETIRED', retired_at = SYSUTCDATETIME()
-WHERE status = 'PRODUCTION';
-
-UPDATE dbo.ml_model_registry
-SET status = 'PRODUCTION', promoted_at = SYSUTCDATETIME(), retired_at = NULL
-WHERE model_version = :model_version AND status IN ('CANDIDATE', 'RETIRED');
+ORDER BY promoted_at DESC NULLS LAST, id DESC
+LIMIT 1
 """)
 
 
@@ -28,15 +19,36 @@ def get_production_model() -> dict | None:
 
 
 def promote_model(model_version: str) -> bool:
-    # Both retirement of the current model and promotion of the candidate
-    # happen in one transaction. If promotion fails, the old production model
-    # remains production after rollback.
+    # PostgreSQL transaction + row locking keeps promotion atomic.
+    # If the candidate cannot be promoted, the current production model is
+    # left unchanged because the transaction is rolled back/never modified.
     with get_engine().begin() as connection:
         candidate = connection.execute(
-            text("SELECT status FROM dbo.ml_model_registry WITH (UPDLOCK, HOLDLOCK) WHERE model_version = :v"),
+            text("""
+                SELECT status
+                FROM ml_model_registry
+                WHERE model_version = :v
+                FOR UPDATE
+            """),
             {"v": model_version},
         ).scalar_one_or_none()
+
         if candidate not in ("CANDIDATE", "RETIRED"):
             return False
-        connection.execute(PROMOTE, {"model_version": model_version})
-    return True
+
+        connection.execute(text("""
+            UPDATE ml_model_registry
+            SET status = 'RETIRED', retired_at = CURRENT_TIMESTAMP
+            WHERE status = 'PRODUCTION'
+        """))
+
+        result = connection.execute(text("""
+            UPDATE ml_model_registry
+            SET status = 'PRODUCTION',
+                promoted_at = CURRENT_TIMESTAMP,
+                retired_at = NULL
+            WHERE model_version = :v
+              AND status IN ('CANDIDATE', 'RETIRED')
+        """), {"v": model_version})
+
+        return result.rowcount == 1
