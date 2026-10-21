@@ -8,13 +8,13 @@ from app.database import get_engine
 PERFORMANCE_SQL = text("""
 SELECT
     COUNT(*) AS labeled_count,
-    SUM(CASE WHEN prediction = 1 AND actual_fault = 1 THEN 1 ELSE 0 END) AS tp,
-    SUM(CASE WHEN prediction = 0 AND actual_fault = 0 THEN 1 ELSE 0 END) AS tn,
-    SUM(CASE WHEN prediction = 1 AND actual_fault = 0 THEN 1 ELSE 0 END) AS fp,
-    SUM(CASE WHEN prediction = 0 AND actual_fault = 1 THEN 1 ELSE 0 END) AS fn,
-    AVG(CAST(fault_probability AS FLOAT)) AS avg_probability,
-    AVG(CAST(actual_fault AS FLOAT)) AS actual_fault_rate
-FROM dbo.ml_prediction_history
+    SUM(CASE WHEN prediction IS TRUE AND actual_fault IS TRUE THEN 1 ELSE 0 END) AS tp,
+    SUM(CASE WHEN prediction IS FALSE AND actual_fault IS FALSE THEN 1 ELSE 0 END) AS tn,
+    SUM(CASE WHEN prediction IS TRUE AND actual_fault IS FALSE THEN 1 ELSE 0 END) AS fp,
+    SUM(CASE WHEN prediction IS FALSE AND actual_fault IS TRUE THEN 1 ELSE 0 END) AS fn,
+    AVG(fault_probability::double precision) AS avg_probability,
+    AVG(actual_fault::int::double precision) AS actual_fault_rate
+FROM ml_prediction_history
 WHERE actual_fault IS NOT NULL
   AND created_at >= :since
   AND (:model_version IS NULL OR model_version = :model_version)
@@ -27,10 +27,10 @@ SELECT
     AVG(pressure) AS pressure_mean,
     AVG(vibration) AS vibration_mean,
     AVG(run_hours) AS run_hours_mean,
-    AVG(CAST(alarm_count AS FLOAT)) AS alarm_count_mean,
-    AVG(CAST(maintenance_days AS FLOAT)) AS maintenance_days_mean,
-    AVG(CAST(fault_probability AS FLOAT)) AS probability_mean
-FROM dbo.ml_prediction_history
+    AVG(alarm_count::double precision) AS alarm_count_mean,
+    AVG(maintenance_days::double precision) AS maintenance_days_mean,
+    AVG(fault_probability::double precision) AS probability_mean
+FROM ml_prediction_history
 WHERE created_at >= :since
   AND (:model_version IS NULL OR model_version = :model_version)
 """)
@@ -56,14 +56,21 @@ def get_model_performance(days: int = 30, model_version: str | None = None) -> d
     fn = int(row["fn"] or 0)
     total = int(row["labeled_count"] or 0)
 
+    precision = _safe_divide(tp, tp + fp)
+    recall = _safe_divide(tp, tp + fn)
+    f1 = None
+    if precision is not None and recall is not None and precision + recall > 0:
+        f1 = round(2 * precision * recall / (precision + recall), 4)
+
     return {
         "window_days": days,
         "model_version": model_version,
         "labeled_count": total,
         "confusion_matrix": {"tp": tp, "tn": tn, "fp": fp, "fn": fn},
         "accuracy": _safe_divide(tp + tn, total),
-        "precision": _safe_divide(tp, tp + fp),
-        "recall": _safe_divide(tp, tp + fn),
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
         "actual_fault_rate": round(float(row["actual_fault_rate"]), 4) if row["actual_fault_rate"] is not None else None,
         "average_probability": round(float(row["avg_probability"]), 4) if row["avg_probability"] is not None else None,
     }
