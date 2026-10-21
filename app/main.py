@@ -1,3 +1,4 @@
+import logging
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -15,6 +16,7 @@ from app.schemas import ActualFaultUpdate, PredictionRequest, PredictionResponse
 from app.security import require_admin_api_key
 
 configure_logging()
+logger = logging.getLogger("machine_fault_api")
 
 app = FastAPI(title="Machine Fault Prediction API", version="7.0.0", description="Production ML service with protected operations and CI/CD.")
 app.middleware("http")(request_logging_middleware)
@@ -96,6 +98,7 @@ def monitoring_performance(days: int = Query(default=30, ge=1, le=365), model_ve
     try:
         return get_model_performance(days, model_version)
     except (RuntimeError, SQLAlchemyError) as exc:
+        logger.exception("monitoring_performance_failed days=%s model_version=%s", days, model_version)
         raise HTTPException(status_code=503, detail="Monitoring database unavailable") from exc
 
 
@@ -104,4 +107,5 @@ def monitoring_features(days: int = Query(default=7, ge=1, le=365), model_versio
     try:
         return get_feature_stats(days, model_version)
     except (RuntimeError, SQLAlchemyError) as exc:
+        logger.exception("monitoring_features_failed days=%s model_version=%s", days, model_version)
         raise HTTPException(status_code=503, detail="Monitoring database unavailable") from exc
