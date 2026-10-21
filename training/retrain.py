@@ -16,27 +16,39 @@ from app.database import get_engine
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FEATURES = ["temperature", "pressure", "vibration", "run_hours", "alarm_count", "maintenance_days"]
+MIN_LABELED_ROWS = 30
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--version", required=True, help="Candidate version, e.g. v1.1")
+    parser.add_argument("--version", required=True, help="Candidate version, e.g. v1.4")
     parser.add_argument("--threshold", type=float, default=0.5)
     args = parser.parse_args()
 
     query = text("""
         SELECT temperature, pressure, vibration, run_hours, alarm_count,
                maintenance_days, actual_fault
-        FROM dbo.ml_prediction_history
+        FROM ml_prediction_history
         WHERE actual_fault IS NOT NULL
         ORDER BY created_at
     """)
     df = pd.read_sql(query, get_engine())
-    if len(df) < 30:
-        raise RuntimeError("At least 30 labeled production rows are required for retraining")
+    if len(df) < MIN_LABELED_ROWS:
+        raise RuntimeError(
+            f"At least {MIN_LABELED_ROWS} labeled production rows are required for retraining; "
+            f"found {len(df)}"
+        )
+
+    class_counts = df["actual_fault"].astype(int).value_counts()
+    if len(class_counts) < 2 or class_counts.min() < 2:
+        raise RuntimeError("Retraining requires at least two labeled rows in each class")
 
     X_train, X_valid, y_train, y_valid = train_test_split(
-        df[FEATURES], df["actual_fault"], test_size=0.25, random_state=42, stratify=df["actual_fault"]
+        df[FEATURES],
+        df["actual_fault"].astype(int),
+        test_size=0.25,
+        random_state=42,
+        stratify=df["actual_fault"].astype(int),
     )
     pipeline = Pipeline([
         ("scaler", StandardScaler()),
@@ -68,7 +80,7 @@ def main() -> None:
 
     with get_engine().begin() as connection:
         connection.execute(text("""
-            INSERT INTO dbo.ml_model_registry (
+            INSERT INTO ml_model_registry (
                 model_version, artifact_path, status, threshold,
                 validation_recall, validation_precision, validation_accuracy, training_rows
             ) VALUES (
@@ -85,7 +97,12 @@ def main() -> None:
             "training_rows": len(X_train),
         })
 
-    print(json.dumps(metrics, indent=2))
+    print(json.dumps({
+        "labeled_rows": len(df),
+        "training_rows": len(X_train),
+        "validation_rows": len(X_valid),
+        "metrics": metrics,
+    }, indent=2))
     print(f"Registered {args.version} as CANDIDATE")
 
 
